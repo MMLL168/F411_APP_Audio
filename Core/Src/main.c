@@ -28,6 +28,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
+
+
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
 
 /* USER CODE END Includes */
 
@@ -60,6 +66,12 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+int _write(int file, char *ptr, int len)
+{
+    // 使用 10ms 超時，失敗也返回成功
+    HAL_UART_Transmit(DEBUG_UART_PORT, (uint8_t*)ptr, len, 10);
+    return len;  // 總是返回成功
+}
 
 /* USER CODE END 0 */
 
@@ -71,7 +83,9 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+    // 設置向量表到APP區域
+  SCB->VTOR = 0x08008000;
+  __disable_irq();
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -80,7 +94,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  __enable_irq();
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -101,13 +115,44 @@ int main(void)
   MX_USB_DEVICE_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
+  // 🔧 簡化測試：先測試基本功能
+  printf("=== APP STARTED ===\r\n");
+
+  // 測試 LED（PA5 是板載 LED）
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  GPIO_InitStruct.Pin = HM_OPA_ADC_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(HM_OPA_ADC_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_WritePin(HM_OPA_ADC_GPIO_Port, HM_OPA_ADC_Pin, GPIO_PIN_SET);
+  HAL_Delay(500);
+  HAL_GPIO_WritePin(HM_OPA_ADC_GPIO_Port, HM_OPA_ADC_Pin, GPIO_PIN_RESET);
+
+  printf("LED Test completed\r\n");
+
+  /* 初始化SSD1306 */
+  char buf[32];
+  printf("ssd1306_Init...\r\n");
+  ssd1306_Init();
+
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(0, 0);
+  ssd1306_WriteString("ssd1306_Init OK!!", Font_6x8, White);
+  ssd1306_UpdateScreen();
 
   /* USER CODE END 2 */
-
+  uint32_t Counter = 0;
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  sprintf(buf, "Counter: %d", Counter++);
+	  ssd1306_Fill(Black);
+	  ssd1306_SetCursor(0, 0); // 設定顯示位置
+	  ssd1306_WriteString(buf, Font_11x18, White);
+	  ssd1306_UpdateScreen();
+	  HAL_Delay(1000); // 每秒更新一次
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

@@ -103,7 +103,7 @@ void Error_Handler(void);
 #define S1_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-
+#define DEBUG_UART_PORT &huart6
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
