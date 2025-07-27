@@ -80,6 +80,83 @@ volatile uint8_t adc_data_ready = 0;
 volatile uint32_t adc_sum = 0;
 volatile uint16_t adc_count = 0;
 
+// 配置參數
+#define SAMPLE_RATE     16000  // 16kHz 採樣率
+#define FRAME_SIZE      512    // 每幀數據大小
+#define BUFFER_SIZE     1024   // 雙緩衝區
+#define TX_BUFFER_SIZE  (4 + FRAME_SIZE*2 + 2)  // 幀頭(4) + 數據(FRAME_SIZE*2) + 校驗和(2)
+// 全局變量
+uint16_t adc_buffer[BUFFER_SIZE];  // DMA 雙緩衝
+volatile uint8_t buffer_half = 0;   // 緩衝區標誌
+volatile uint8_t buffer_full = 0;   // 緩衝區標誌
+uint8_t tx_buffer[TX_BUFFER_SIZE];  // UART 發送緩衝區
+
+// UART 發送函數
+HAL_StatusTypeDef UART_SendData(uint8_t* data, uint16_t size)
+{
+    return HAL_UART_Transmit(&huart6, data, size, 100);  // 100ms 超時
+}
+
+// 數據處理函數
+void ProcessAudioData(uint16_t* data, uint16_t size)
+{
+    static uint32_t frame_count = 0;
+    frame_count++;
+
+    // 簡單的 DC 偏移去除
+    int32_t sum = 0;
+    for(int i = 0; i < size; i++)
+    {
+        sum += data[i];
+    }
+    int16_t dc_offset = sum / size;
+
+    // 幀頭
+    tx_buffer[0] = 0xAA;
+    tx_buffer[1] = 0x55;
+    tx_buffer[2] = size & 0xFF;
+    tx_buffer[3] = (size >> 8) & 0xFF;
+
+    // 數據
+    uint16_t checksum = 0;
+    for(int i = 0; i < size; i++)
+    {
+        int16_t sample = data[i] - dc_offset;
+        checksum += sample;
+        tx_buffer[4 + i*2] = sample & 0xFF;
+        tx_buffer[4 + i*2 + 1] = (sample >> 8) & 0xFF;
+    }
+
+    // 校驗和
+    tx_buffer[4 + size*2] = checksum & 0xFF;
+    tx_buffer[4 + size*2 + 1] = (checksum >> 8) & 0xFF;
+
+    // 發送數據
+    if(UART_SendData(tx_buffer, TX_BUFFER_SIZE) != HAL_OK)
+    {
+        // 可以添加 LED 閃爍來指示傳輸錯誤
+        Error_Handler();
+    }
+}
+
+// ADC DMA 回調
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if(hadc->Instance == ADC1)
+    {
+        buffer_half = 1;
+    }
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if(hadc->Instance == ADC1)
+    {
+        buffer_full = 1;
+    }
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -156,34 +233,46 @@ int main(void)
   uint32_t Counter = 0;
 
   // 啟動 ADC DMA
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buf, 1);
-  // 啟動 Timer4 的 CC4 通道
-  HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_4);
+  if(HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, BUFFER_SIZE) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  // 啟動定時器基礎功能
+  if (HAL_TIM_Base_Start(&htim4) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  // 啟動定時器
+  if(HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_4) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  // 發送啟動消息
+  uint8_t start_msg[] = "Audio Sampling Start\r\n";
+  HAL_UART_Transmit(&huart6, start_msg, sizeof(start_msg)-1, 100);
+
 
   while (1)
   {
-      if (adc_data_ready) {
-          uint32_t avg_adc = adc_sum / adc_count;
-
-          // 更新顯示
-          char buf[32];
-          sprintf(buf, "ADC: %lu", avg_adc);
-          ssd1306_Fill(Black);
-          ssd1306_SetCursor(0, 0);
-          ssd1306_WriteString(buf, Font_11x18, White);
-          ssd1306_UpdateScreen();
-
-          // 打印到串口
-          printf("ADC Avg: %lu\r\n", avg_adc);
-
-          // 重置計數器
-          adc_sum = 0;
-          adc_count = 0;
-          adc_data_ready = 0;
+      if(buffer_half)
+      {
+    	  //printf("adc_buffer[0]: %d\r\n", adc_buffer[0]);
+          ProcessAudioData(&adc_buffer[0], FRAME_SIZE);
+          buffer_half = 0;
       }
 
-      // 添加一些延時，讓系統有時間處理其他任務
-      HAL_Delay(100);
+      if(buffer_full)
+      {
+    	  //printf("adc_buffer[10]: %d\r\n", adc_buffer[10]);
+          ProcessAudioData(&adc_buffer[FRAME_SIZE], FRAME_SIZE);
+          buffer_full = 0;
+      }
+
+      //HAL_GPIO_TogglePin(HM_OPA_ADC_Pin, HM_OPA_ADC_Pin);  // 假設 PC13 是板載 LED
+      //HAL_Delay(100);  // LED 閃爍頻率
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -238,19 +327,6 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-// DMA 轉換完成回調
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance == ADC1) {
-        // 累加數據而不是直接打印
-        adc_sum += adc_dma_buf[0];
-        adc_count++;
-
-        if (adc_count >= 100) {  // 每100個樣本才更新一次
-            adc_data_ready = 1;
-        }
-    }
-}
 /* USER CODE END 4 */
 
 /**
