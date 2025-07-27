@@ -73,6 +73,13 @@ int _write(int file, char *ptr, int len)
     return len;  // 總是返回成功
 }
 
+// === ADC DMA 相關 ===
+#define ADC_BUF_SIZE 1024
+uint16_t adc_dma_buf[ADC_BUF_SIZE];
+volatile uint8_t adc_data_ready = 0;
+volatile uint32_t adc_sum = 0;
+volatile uint16_t adc_count = 0;
+
 /* USER CODE END 0 */
 
 /**
@@ -142,17 +149,41 @@ int main(void)
   ssd1306_UpdateScreen();
 
   /* USER CODE END 2 */
-  uint32_t Counter = 0;
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+  uint32_t Counter = 0;
+
+  // 啟動 ADC DMA
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buf, 1);
+  // 啟動 Timer4 的 CC4 通道
+  HAL_TIM_OC_Start(&htim4, TIM_CHANNEL_4);
+
   while (1)
   {
-	  sprintf(buf, "Counter: %d", Counter++);
-	  ssd1306_Fill(Black);
-	  ssd1306_SetCursor(0, 0); // 設定顯示位置
-	  ssd1306_WriteString(buf, Font_11x18, White);
-	  ssd1306_UpdateScreen();
-	  HAL_Delay(1000); // 每秒更新一次
+      if (adc_data_ready) {
+          uint32_t avg_adc = adc_sum / adc_count;
+
+          // 更新顯示
+          char buf[32];
+          sprintf(buf, "ADC: %lu", avg_adc);
+          ssd1306_Fill(Black);
+          ssd1306_SetCursor(0, 0);
+          ssd1306_WriteString(buf, Font_11x18, White);
+          ssd1306_UpdateScreen();
+
+          // 打印到串口
+          printf("ADC Avg: %lu\r\n", avg_adc);
+
+          // 重置計數器
+          adc_sum = 0;
+          adc_count = 0;
+          adc_data_ready = 0;
+      }
+
+      // 添加一些延時，讓系統有時間處理其他任務
+      HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -207,6 +238,19 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+// DMA 轉換完成回調
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if (hadc->Instance == ADC1) {
+        // 累加數據而不是直接打印
+        adc_sum += adc_dma_buf[0];
+        adc_count++;
+
+        if (adc_count >= 100) {  // 每100個樣本才更新一次
+            adc_data_ready = 1;
+        }
+    }
+}
 /* USER CODE END 4 */
 
 /**
